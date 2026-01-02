@@ -1,0 +1,112 @@
+name: Update HMV Machines
+
+on:
+  schedule:
+    # 每天 UTC 时间 00:00 运行
+    - cron: '0 0 * * *'
+  workflow_dispatch: # 允许手动触发
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      
+      - name: Install pipx
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pipx
+          python -m pipx ensurepath
+      
+      - name: Install hackmyvm-cli
+        run: |
+          pipx install git+https://github.com/Yanxinwu946/hackmyvm-cli
+      
+      - name: Create config directory and file
+        env:
+          HMV_USERNAME: ${{ secrets.HMV_USERNAME }}
+          HMV_PASSWORD: ${{ secrets.HMV_PASSWORD }}
+        run: |
+          mkdir -p ~/.hmv
+          cat > ~/.hmv/config.json << EOF
+          {
+            "username": "$HMV_USERNAME",
+            "password": "$HMV_PASSWORD"
+          }
+          EOF
+      
+      - name: Export machines data
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Files before export:"
+          ls -la
+          hmv export
+          echo "Files after export:"
+          ls -la
+          echo "machines.json content preview:"
+          head -20 machines.json
+      
+      - name: Process and format data
+        run: |
+          python << 'PYTHON_SCRIPT'
+          import json
+
+          # 读取原始数据
+          with open('machines.json', 'r', encoding='utf-8') as f:
+              data = json.load(f)
+
+          # 重新排序字段
+          processed_machines = []
+          for machine in data['machines']:
+              processed_machine = {
+                  'id': machine['id'],
+                  'name': machine['name'],
+                  'difficulty': machine['difficulty'],
+                  'author': machine['author'],
+                  'platform': machine['platform'],
+                  'size': machine['size'],
+                  'image': machine['image'],
+                  'machine_url': machine['machine_url'],
+                  'download_url': machine['download_url']
+              }
+              processed_machines.append(processed_machine)
+
+          # 创建最终数据结构
+          result = {
+              'total_machines': data['total_machines'],
+              'machines': processed_machines
+          }
+
+          # 保存处理后的数据到临时文件，然后移动（避免覆盖问题）
+          with open('machines_processed.json', 'w', encoding='utf-8') as f:
+              json.dump(result, f, indent=2, ensure_ascii=False)
+
+          print(f"✓ Processed {len(processed_machines)} machines")
+          PYTHON_SCRIPT
+          
+          # 用处理后的文件替换原文件
+          mv machines_processed.json machines.json
+      
+      - name: Commit and push if changed
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add machines.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update machines data - $(date +'%Y-%m-%d')"
+            git push
+            echo "Changes committed and pushed"
+          fi
